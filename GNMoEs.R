@@ -1,3 +1,8 @@
+library(splines)
+library(MCMCpack)
+library(INLA)
+library(matrixStats)
+
 bspline <- function(x, xl, xr, ndx, bdeg) {
 dx <- (xr - xl) / ndx
 knots <- seq(xl - bdeg * dx, xr + bdeg * dx, by = dx)
@@ -344,116 +349,4 @@ MoE_s<-function (Y, X, G=3, delta = 1, a=1, b=0.005,v=0.01, nseg=20, bdeg=3, bur
 			duration=duration)
 		return(output)
 	}
-}
-
-blca<-function(Y,G=2, delta=1, burn.in=0.1, maxiter = 5000,seed=303) {
-	cat("Start Time =",date(),"\n")
-	flush.console()
-	starttime = proc.time()[3]
-	set.seed(seed)
-   	N <- nrow(Y)
-	Y[,1]<-Y[,1]-min(Y[,1])+1
-	Jq<-length(unique(Y[,1]))
-	Y_d_old<-matrix(0,N,Jq)
-	for (j in 1:N){
-		Y_d_old[j,Y[j,1]]<-1
-	}
-	for(c in 2:ncol(Y)){
-		Y[,c]<-Y[,c]-min(Y[,c])+1
-		Jq<-c(Jq,length(unique(Y[,c])))
-		Y_d<-matrix(0,N,Jq[c])
-		for (j in 1:N){
-			Y_d[j,Y[j,c]]<-1
-		}
-		Y_d_old<-cbind(Y_d_old,Y_d)
-	}
-	Y<-Y_d_old
-	thetastore<-array(0,dim=c(G,ncol(Y),maxiter))
-	theta <- thetastore[,,1]
-	taustore<-matrix(0,G,maxiter)
-	tau <- rdirichlet(1, rep(delta,G))
-	theta[,1:(Jq[1])]<-rdirichlet(G,rep(delta,Jq[1]))
-	for (i in 2:length(Jq)){
-		theta[,(sum(Jq[1:(i-1)])+1):(sum(Jq[1:i]))]<-rdirichlet(G,rep(delta,Jq[i]))
-	}
-	W <- matrix(nrow = N, ncol = G)
-	S <- matrix(nrow = N, ncol = G)
-	Sstore<-array(0,dim=c(N,G,maxiter))
-	for(j in 1:N){
-		for(g in 1:G){
-			W[j,g] <- tau[g]*prod(theta[g,]^t(Y[j,]))
-		}
-		S[j,]<-rmultinom(1,1,W[j,])
-	}
-	lik<-matrix(0,N,maxiter)
-	llik<-rep(0,maxiter)
-	for (it in 1:maxiter) {
-		tau<-rdirichlet(1,delta+colSums(S))
-		taustore[,it]<-tau
-		for(g in 1:G){
-			if(sum(S[,g])>1){
-				theta[g,1:(Jq[1])]<-rdirichlet(1,delta+colSums(Y[which(S[,g]==1),1:(Jq[1])]))
-				for (i in 2:length(Jq)){
-					theta[g,(sum(Jq[1:(i-1)])+1):(sum(Jq[1:i]))]<-rdirichlet(1,delta+
-						colSums(Y[which(S[,g]==1),(sum(Jq[1:(i-1)])+1):(sum(Jq[1:i]))]))
-				}
-			}
-  			if(sum(S[,g])==1){
-   				theta[g,1:(Jq[1])]<-rdirichlet(1,delta+Y[which(S[,g]==1),1:(Jq[1])])
-   				for (i in 2:length(Jq)){
-    					theta[g,(sum(Jq[1:(i-1)])+1):(sum(Jq[1:i]))]<-rdirichlet(1,delta+
-     						Y[which(S[,g]==1),(sum(Jq[1:(i-1)])+1):(sum(Jq[1:i]))])
-   				}
-  			}
-  			if(sum(S[,g])==0){
-   				theta[g,1:(Jq[1])]<-rdirichlet(1,rep(delta,Jq[1]))
-   				for (i in 2:length(Jq)){
-    					theta[g,(sum(Jq[1:(i-1)])+1):(sum(Jq[1:i]))]<-rdirichlet(1,rep(delta,Jq[i]))
-   				}
-  			}
-		}
-		thetastore[,,it]<-theta
-		S<-matrix(0,N,G)
-		for(j in 1:N){
-			for(g in 1:G){
-				W[j,g] <- tau[g]*prod(theta[g,]^t(Y[j,]))
-			}
-			S[j,sample(1:G,1,prob=W[j,]/sum(W[j,]))]<-1
-			Sstore[j,,it]<-S[j,]
-			lik[j,it]=prod(theta[which(S[j,]==1),]^t(Y[j,]))
-			llik[it]=llik[it]+log(prod(theta[which(S[j,]==1),]^t(Y[j,])))
-		}
-		if(is.element(it, c(1:5, 10, 20, 50, 100, 200)) | it%%500==0){
-			if((proc.time()[3] - starttime)<60){
-				cat("sim =",
-				it, "/ duration of iter proc so far:", 
-                  	round(diff <- proc.time()[3] - starttime, 2),
-                  	"sec.\n")
-				flush.console()
-			}
-			else{
-				cat("sim =",
-				it, "/ duration of iter proc so far:", 
-                  	round(diff <- ((proc.time()[3] - starttime)/60), 2),
-                  	"min.\n")
-				flush.console()
-			}
-		}
-	}
-	burn.in<-burn.in*maxiter
-	group<-apply(apply(Sstore[,,(burn.in+1):maxiter],c(1,2),mean),1,which.max)
-	finish = proc.time()[3]
-	duration = finish - starttime
-	output<-list(tau=rowMeans(taustore[,(burn.in+1):maxiter]),
-		#taustore=taustore,
-		theta=apply(thetastore[,,(burn.in+1):maxiter],c(1,2),mean),
-		#thetastore=thetastore,
-		group=group,
-		AICM=-2*(mean(llik[(burn.in+1):maxiter])-var(llik[(burn.in+1):maxiter])),
-		BICM=-2*(mean(llik[(burn.in+1):maxiter])-log(N-1)*var(llik[(burn.in+1):maxiter])),
-		DIC=-2*(2*mean(llik[(burn.in+1):maxiter])-sum(log(rowMeans(lik[,(burn.in+1):maxiter])))),
-		#lik=lik,
-		#llik=llik,
-		duration=duration)
-	return(output)
 }
